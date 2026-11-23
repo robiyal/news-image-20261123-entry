@@ -1,54 +1,69 @@
-// news-image-20261123-entry — main.ts
-// Copies the pre-rendered image (entry.png, beside this file) to the
-// output directory as entry.png. Node 22, standard library only,
-// no network, no dependencies. Deterministic: byte-identical output.
-const fs = require("fs");
-const path = require("path");
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const MAX_BYTES = 1048576;
+const SOURCE_NAME = "entry.png";
 
-const scriptDir = __dirname;
-const sourcePath = path.join(scriptDir, "entry.png");
+function fail(message: string): never {
+  console.error("main.ts: " + message);
+  process.exit(1);
+}
 
-function resolveOutputDir() {
-  const raw = process.env.MAKEFUN_OUTPUT_DIR;
-  if (typeof raw === "string" && raw.trim() !== "") {
-    return raw.trim();
+function pickOutputDir(): string {
+  const fromEnv = process.env.MAKEFUN_OUTPUT_DIR;
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
   }
-  return "/output";
+  try {
+    fs.accessSync("/output", fs.constants.W_OK);
+    return "/output";
+  } catch {
+    return path.join(process.cwd(), "out");
+  }
 }
 
-const outputDir = resolveOutputDir();
-const outputPath = path.join(outputDir, "entry.png");
+const here = path.dirname(fileURLToPath(import.meta.url));
+const sourcePath = path.join(here, SOURCE_NAME);
 
-let data;
+let bytes: Buffer;
 try {
-  data = fs.readFileSync(sourcePath);
-} catch (err) {
-  console.error("error: cannot read source image: " + sourcePath + " (" + err.message + ")");
-  process.exit(1);
+  bytes = fs.readFileSync(sourcePath);
+} catch {
+  fail("cannot read rendered image next to main.ts: " + sourcePath);
 }
 
-if (data.length < 4) {
-  console.error("error: source image is only " + data.length + " bytes, too small to be a JPEG");
-  process.exit(1);
+if (bytes.length < 4) {
+  fail("image too small: " + bytes.length + " bytes in " + sourcePath);
+}
+if (bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+  fail("not a JPEG: missing SOI marker (FF D8) in " + sourcePath);
+}
+if (bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
+  fail("not a JPEG: missing EOI marker (FF D9) in " + sourcePath);
+}
+if (bytes.length > MAX_BYTES) {
+  fail(
+    "rendered image is " +
+      bytes.length +
+      " bytes, over the 1 MiB limit (" +
+      MAX_BYTES +
+      " bytes)",
+  );
 }
 
-if (data.length > MAX_BYTES) {
-  console.error("error: source image is " + data.length + " bytes, over the 1048576 byte limit");
-  process.exit(1);
+const outputDir = pickOutputDir();
+try {
+  fs.mkdirSync(outputDir, { recursive: true });
+} catch {
+  fail("cannot create output directory: " + outputDir);
 }
 
-if (data[0] !== 0xff || data[1] !== 0xd8) {
-  console.error("error: source image is not a valid JPEG (must start with FF D8)");
-  process.exit(1);
+const targetPath = path.join(outputDir, SOURCE_NAME);
+try {
+  fs.writeFileSync(targetPath, bytes);
+} catch {
+  fail("cannot write output image: " + targetPath);
 }
 
-if (data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) {
-  console.error("error: source image is not a valid JPEG (must end with FF D9)");
-  process.exit(1);
-}
-
-fs.mkdirSync(outputDir, { recursive: true });
-fs.writeFileSync(outputPath, data);
-console.log("wrote " + outputPath + " (" + data.length + " bytes)");
+console.log("wrote " + targetPath + " (" + bytes.length + " bytes)");
